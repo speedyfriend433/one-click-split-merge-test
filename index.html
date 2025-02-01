@@ -207,14 +207,36 @@
 
     // Utility: Parse a frame string like "{{x,y},{w,h}}"
     // Returns an object {x, y, w, h} or null on failure.
-    function parseFrameString(str) {
-      // Remove curly braces and spaces, then split by comma
-      const cleaned = str.replace(/[{}]/g, '').trim();
-      const parts = cleaned.split(',');
-      if (parts.length < 4) return null;
-      const [x, y, w, h] = parts.map(parseFloat);
-      return { x, y, w, h };
-    }
+    // Utility: Parse a frame string like "{{x,y},{w,h}}"
+function parseFrameString(str) {
+  // Ensure the string is valid and contains the expected format
+  if (!str || typeof str !== 'string') {
+    console.error("Invalid frame string:", str);
+    return null;
+  }
+
+  // Remove curly braces and spaces, then split by comma
+  const cleaned = str.replace(/[{}]/g, '').trim();
+  
+  // Check if the cleaned string contains 4 numeric values
+  const parts = cleaned.split(',');
+  if (parts.length !== 4) {
+    console.error("Incorrect frame format:", cleaned);
+    return null;
+  }
+
+  // Parse values as numbers
+  const [x, y, w, h] = parts.map(parseFloat);
+
+  // Ensure all parsed values are valid numbers
+  if (isNaN(x) || isNaN(y) || isNaN(w) || isNaN(h)) {
+    console.error("Invalid frame values:", x, y, w, h);
+    return null;
+  }
+
+  // Return the parsed rectangle object
+  return { x, y, w, h };
+}
   </script>
 </body>
 </html>
