@@ -2,127 +2,369 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>One Click Split-Merge</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pica/6.0.0/pica.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/plist/3.0.1/plist.min.js"></script>
+  <title>PNG/Plist Splitter and Merger</title>
   <style>
-    #output { margin-top: 20px; }
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .tab { display: inline-block; padding: 10px 20px; background: #ddd; cursor: pointer; margin-right: 5px; }
+    .tab.active { background: #aaa; }
+    .content { display: none; margin-top: 20px; }
+    .content.active { display: block; }
+    input { margin: 5px 0; }
+    canvas { border: 1px solid #ccc; margin: 5px; }
+    .result-item { margin: 10px; display: inline-block; text-align: center; }
   </style>
 </head>
 <body>
-  <h1>One Click PNG Split/Merge</h1>
-  <input type="file" id="inputFile" accept=".zip" />
-  <div id="output"></div>
+  <h1>PNG/Plist Splitter and Merger</h1>
+  <div>
+    <span class="tab active" data-tab="split">Split</span>
+    <span class="tab" data-tab="merge">Merge</span>
+  </div>
+
+  <!-- Split Section -->
+  <div id="split" class="content active">
+    <h2>Split Sprite Sheet</h2>
+    <p>
+      You can upload a ZIP file containing both a PNG and its corresponding plist (or XML) file,
+      or upload them separately.
+    </p>
+    <input type="file" id="split-zip" accept=".zip">
+    <br>
+    <p>Or upload PNG and Plist separately:</p>
+    <input type="file" id="split-png" accept="image/png">
+    <br>
+    <input type="file" id="split-plist" accept=".plist, .xml">
+    <br>
+    <button id="split-btn">Split</button>
+    <div id="split-results"></div>
+  </div>
+
+  <!-- Merge Section -->
+  <div id="merge" class="content">
+    <h2>Merge Images</h2>
+    <p>
+      You can upload a ZIP file containing multiple PNG files or select multiple PNG files directly.
+      The images will be merged into one sprite sheet (arranged horizontally) and a simple plist will be generated.
+    </p>
+    <input type="file" id="merge-zip" accept=".zip">
+    <br>
+    <p>Or select multiple PNG files:</p>
+    <input type="file" id="merge-pngs" accept="image/png" multiple>
+    <br>
+    <button id="merge-btn">Merge</button>
+    <div id="merge-result"></div>
+  </div>
+
+  <!-- Include JSZip from a CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script>
-    document.getElementById('inputFile').addEventListener('change', handleFileUpload, false);
+    /* ========= Tab Switching ========= */
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', function() {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
+        this.classList.add('active');
+        document.getElementById(this.getAttribute('data-tab')).classList.add('active');
+      });
+    });
 
-    async function handleFileUpload(event) {
-      const file = event.target.files[0];
-      if (!file) return;
-
-      const zip = await JSZip.loadAsync(file);
-      const plistFile = zip.file(/\.plist$/)[0];
-      const pngFiles = zip.file(/\.png$/);
-
-      if (!plistFile) {
-        alert("No plist file found in ZIP!");
-        return;
+    /* ========= Utility: Parse plist XML ========= */
+    function parsePlist(plistContent) {
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(plistContent, "text/xml");
+      // Look for the <dict> that contains a key called "frames"
+      const dicts = xmlDoc.getElementsByTagName("dict");
+      let frames = {};
+      for (let i = 0; i < dicts.length; i++) {
+        let keys = dicts[i].getElementsByTagName("key");
+        for (let j = 0; j < keys.length; j++) {
+          if (keys[j].textContent.trim() === "frames") {
+            let frameDict = keys[j].nextElementSibling;
+            if (frameDict && frameDict.tagName === "dict") {
+              let children = frameDict.children;
+              // The children alternate between key and dict elements.
+              for (let k = 0; k < children.length; k += 2) {
+                let frameName = children[k].textContent.trim();
+                let frameData = {};
+                let frameInfoDict = children[k + 1];
+                let subKeys = frameInfoDict.getElementsByTagName("key");
+                for (let l = 0; l < subKeys.length; l++) {
+                  let keyName = subKeys[l].textContent.trim();
+                  let valueElem = subKeys[l].nextElementSibling;
+                  let value = valueElem.textContent.trim();
+                  frameData[keyName] = value;
+                }
+                frames[frameName] = frameData;
+              }
+              return frames;
+            }
+          }
+        }
       }
-
-      const plistData = await plistFile.async('text');
-      const plist = plist.parse(plistData);
-      const images = await loadPngImages(pngFiles);
-
-      const mergedCanvas = await mergeImages(images, plist);
-      displayMergedCanvas(mergedCanvas);
+      return frames;
     }
 
-    async function loadPngImages(pngFiles) {
-      const images = [];
-      for (const file of pngFiles) {
-        const imgData = await file.async('blob');
-        const img = await createImageBitmap(imgData);
-        images.push(img);
+    /* ========= Utility: Parse a frame string ========= */
+    // Example frame string: "{{10,20},{30,40}}"
+    function parseFrameString(frameStr) {
+      let nums = frameStr.replace(/[{}]/g, "").split(",");
+      if (nums.length >= 4) {
+        return {
+          x: parseFloat(nums[0]),
+          y: parseFloat(nums[1]),
+          w: parseFloat(nums[2]),
+          h: parseFloat(nums[3])
+        };
       }
-      return images;
+      return null;
     }
 
-    async function mergeImages(images, plist) {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
+    /* ========= Split Functionality ========= */
+    document.getElementById('split-btn').addEventListener('click', async function() {
+      const splitResults = document.getElementById('split-results');
+      splitResults.innerHTML = "";
+      let pngFile = document.getElementById('split-png').files[0];
+      let plistFile = document.getElementById('split-plist').files[0];
+      let zipFile = document.getElementById('split-zip').files[0];
 
-      let maxWidth = 0;
-      let totalHeight = 0;
+      let imageBlob = null;
+      let plistContent = null;
 
-      // First, determine the final size of the canvas based on the frames
-      plist.frames.forEach(frameInfo => {
-        if (!frameInfo.frame) {
-          console.error("Missing frame data for:", frameInfo);
+      if (zipFile) {
+        // If a zip file was uploaded, use JSZip to extract the PNG and plist
+        const zipData = await zipFile.arrayBuffer();
+        const zip = await JSZip.loadAsync(zipData);
+        let pngEntry = null;
+        let plistEntry = null;
+        zip.forEach(function(relativePath, zipEntry) {
+          if (!pngEntry && relativePath.toLowerCase().endsWith(".png")) {
+            pngEntry = zipEntry;
+          }
+          if (!plistEntry && (relativePath.toLowerCase().endsWith(".plist") ||
+                                relativePath.toLowerCase().endsWith(".xml"))) {
+            plistEntry = zipEntry;
+          }
+        });
+        if (pngEntry && plistEntry) {
+          imageBlob = await pngEntry.async("blob");
+          plistContent = await plistEntry.async("text");
+        } else {
+          alert("Zip file must contain both a PNG and a plist/XML file.");
+          return;
+        }
+      } else {
+        // Otherwise, require both files to be selected separately
+        if (!pngFile || !plistFile) {
+          alert("Please provide both PNG and plist files.");
+          return;
+        }
+        imageBlob = pngFile;
+        plistContent = await plistFile.text();
+      }
+
+      // Load the PNG image
+      let img = new Image();
+      let imageUrl = URL.createObjectURL(imageBlob);
+      img.src = imageUrl;
+      img.onload = function() {
+        // Create a canvas for the full sprite sheet
+        let fullCanvas = document.createElement("canvas");
+        fullCanvas.width = img.width;
+        fullCanvas.height = img.height;
+        let fullCtx = fullCanvas.getContext("2d");
+        fullCtx.drawImage(img, 0, 0);
+
+        // Parse the plist file for frame data
+        let frames = parsePlist(plistContent);
+        if (Object.keys(frames).length === 0) {
+          alert("Failed to parse plist file or no frames found.");
           return;
         }
 
-        const frame = parseFrameString(frameInfo.frame);
-        if (!frame) return;
+        // For each frame, crop out the sprite and display it
+        for (let frameName in frames) {
+          let frameData = frames[frameName];
+          if (!frameData.frame) continue;
+          let rect = parseFrameString(frameData.frame);
+          if (!rect) continue;
 
-        maxWidth = Math.max(maxWidth, frame.x + frame.w);
-        totalHeight = Math.max(totalHeight, frame.y + frame.h);
-      });
+          // Create a canvas for the individual frame
+          let frameCanvas = document.createElement("canvas");
+          frameCanvas.width = rect.w;
+          frameCanvas.height = rect.h;
+          let ctx = frameCanvas.getContext("2d");
+          ctx.drawImage(fullCanvas, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
 
-      canvas.width = maxWidth;
-      canvas.height = totalHeight;
+          // Convert canvas to data URL and create a download link
+          let dataUrl = frameCanvas.toDataURL();
+          let div = document.createElement("div");
+          div.className = "result-item";
+          let imgElem = document.createElement("img");
+          imgElem.src = dataUrl;
+          imgElem.style.maxWidth = "150px";
+          imgElem.style.display = "block";
+          let link = document.createElement("a");
+          link.href = dataUrl;
+          link.download = frameName + ".png";
+          link.textContent = "Download " + frameName;
+          div.appendChild(imgElem);
+          div.appendChild(link);
+          splitResults.appendChild(div);
+        }
+        URL.revokeObjectURL(imageUrl);
+      };
+      img.onerror = function() {
+        alert("Failed to load image.");
+      };
+    });
 
-      // Now, draw the images into the canvas based on the frames
-      plist.frames.forEach((frameInfo, index) => {
-        if (!frameInfo.frame) {
-          console.error("Missing frame data for:", frameInfo);
+    /* ========= Merge Functionality ========= */
+    document.getElementById('merge-btn').addEventListener('click', async function() {
+      const mergeResult = document.getElementById('merge-result');
+      mergeResult.innerHTML = "";
+      let pngFiles = document.getElementById('merge-pngs').files;
+      let zipFile = document.getElementById('merge-zip').files[0];
+      let images = [];
+
+      if (zipFile) {
+        // If a zip file was uploaded, extract PNG files using JSZip
+        const zipData = await zipFile.arrayBuffer();
+        const zip = await JSZip.loadAsync(zipData);
+        let filePromises = [];
+        zip.forEach(function(relativePath, zipEntry) {
+          if (relativePath.toLowerCase().endsWith(".png")) {
+            filePromises.push(
+              zipEntry.async("blob").then(blob => {
+                return { name: relativePath, blob: blob };
+              })
+            );
+          }
+        });
+        images = await Promise.all(filePromises);
+      } else {
+        if (pngFiles.length === 0) {
+          alert("Please select PNG files or a zip file.");
           return;
         }
+        for (let i = 0; i < pngFiles.length; i++) {
+          images.push({ name: pngFiles[i].name, blob: pngFiles[i] });
+        }
+      }
 
-        const frame = parseFrameString(frameInfo.frame);
-        if (!frame) return;
+      // Load each image into an Image object
+      let loadedImages = await Promise.all(images.map(imgInfo => {
+        return new Promise((resolve, reject) => {
+          let img = new Image();
+          let url = URL.createObjectURL(imgInfo.blob);
+          img.onload = function() {
+            resolve({ name: imgInfo.name, img: img });
+            URL.revokeObjectURL(url);
+          };
+          img.onerror = function() {
+            reject("Failed to load image: " + imgInfo.name);
+          };
+          img.src = url;
+        });
+      }));
 
-        ctx.drawImage(images[index], frame.x, frame.y, frame.w, frame.h);
+      // For simplicity, merge images by arranging them horizontally
+      let totalWidth = 0;
+      let maxHeight = 0;
+      loadedImages.forEach(item => {
+        totalWidth += item.img.width;
+        if (item.img.height > maxHeight) maxHeight = item.img.height;
       });
 
-      return canvas;
-    }
+      // Create a canvas for the merged image
+      let mergedCanvas = document.createElement("canvas");
+      mergedCanvas.width = totalWidth;
+      mergedCanvas.height = maxHeight;
+      let mCtx = mergedCanvas.getContext("2d");
 
-    // Utility: Parse a frame string like "{{x,y},{w,h}}"
-    function parseFrameString(str) {
-      if (!str || typeof str !== 'string') {
-        console.error("Invalid frame string:", str);
-        return null;
+      // Build a simple plist frames object and draw images in order
+      let plistFrames = {};
+      let currentX = 0;
+      loadedImages.forEach(item => {
+        mCtx.drawImage(item.img, currentX, 0);
+        // Record the frame rectangle (format: "{{x,y},{w,h}}")
+        let frameStr = `{{${currentX},0},{${item.img.width},${item.img.height}}}`;
+        plistFrames[item.name] = { frame: frameStr };
+        currentX += item.img.width;
+      });
+
+      // Generate merged image data URL
+      let mergedDataUrl = mergedCanvas.toDataURL();
+
+      // Generate a plist XML string for the merged sprite sheet
+      let plistXml = generatePlist(plistFrames, totalWidth, maxHeight);
+
+      // Display merged result and download links
+      let resultDiv = document.createElement("div");
+      resultDiv.innerHTML = "<h3>Merged Sprite Sheet</h3>";
+      let imgElem = document.createElement("img");
+      imgElem.src = mergedDataUrl;
+      imgElem.style.maxWidth = "400px";
+      resultDiv.appendChild(imgElem);
+
+      let downloadImgLink = document.createElement("a");
+      downloadImgLink.href = mergedDataUrl;
+      downloadImgLink.download = "merged.png";
+      downloadImgLink.textContent = "Download Merged Image";
+      downloadImgLink.style.display = "block";
+      resultDiv.appendChild(downloadImgLink);
+
+      let blobPlist = new Blob([plistXml], { type: "text/xml" });
+      let plistUrl = URL.createObjectURL(blobPlist);
+      let downloadPlistLink = document.createElement("a");
+      downloadPlistLink.href = plistUrl;
+      downloadPlistLink.download = "merged.plist";
+      downloadPlistLink.textContent = "Download Plist File";
+      downloadPlistLink.style.display = "block";
+      resultDiv.appendChild(downloadPlistLink);
+
+      mergeResult.appendChild(resultDiv);
+    });
+
+    /* ========= Generate a simple plist XML ========= */
+    function generatePlist(frames, sheetWidth, sheetHeight) {
+      let plist = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+      plist += `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n`;
+      plist += `<plist version="1.0">\n`;
+      plist += `<dict>\n`;
+      plist += `  <key>frames</key>\n`;
+      plist += `  <dict>\n`;
+      for (let frameName in frames) {
+        plist += `    <key>${frameName}</key>\n`;
+        plist += `    <dict>\n`;
+        plist += `      <key>frame</key>\n`;
+        plist += `      <string>${frames[frameName].frame}</string>\n`;
+        plist += `      <key>rotated</key>\n`;
+        plist += `      <false/>\n`;
+        plist += `      <key>trimmed</key>\n`;
+        plist += `      <false/>\n`;
+        plist += `      <key>offset</key>\n`;
+        plist += `      <string>{0,0}</string>\n`;
+        plist += `      <key>sourceSize</key>\n`;
+        // For simplicity we reuse the size from the frame string.
+        let sizePart = frames[frameName].frame.split("},{")[1].replace("}}", "");
+        plist += `      <string>{${sizePart}}</string>\n`;
+        plist += `    </dict>\n`;
       }
-
-      const cleaned = str.replace(/[{}]/g, '').trim();
-      const parts = cleaned.split(',');
-      if (parts.length !== 4) {
-        console.error("Incorrect frame format:", cleaned);
-        return null;
-      }
-
-      const [x, y, w, h] = parts.map(parseFloat);
-
-      if (isNaN(x) || isNaN(y) || isNaN(w) || isNaN(h)) {
-        console.error("Invalid frame values:", x, y, w, h);
-        return null;
-      }
-
-      return { x, y, w, h };
-    }
-
-    function displayMergedCanvas(mergedCanvas) {
-      const resultsDiv = document.getElementById('output');
-      mergedCanvas.toBlob(function(blob) {
-        const mergedURL = URL.createObjectURL(blob);
-        resultsDiv.innerHTML = `
-          <h2>Output Image</h2>
-          <img src="${mergedURL}" alt="Merged Image" style="max-width: 100%;"><br>
-          <a href="${mergedURL}" download="merged_image.png" style="font-size:16px;">Download Merged Image</a>
-        `;
-      }, 'image/png');
+      plist += `  </dict>\n`;
+      plist += `  <key>metadata</key>\n`;
+      plist += `  <dict>\n`;
+      plist += `    <key>format</key>\n`;
+      plist += `    <integer>2</integer>\n`;
+      plist += `    <key>realTextureFileName</key>\n`;
+      plist += `    <string>merged.png</string>\n`;
+      plist += `    <key>size</key>\n`;
+      plist += `    <string>{${sheetWidth},${sheetHeight}}</string>\n`;
+      plist += `    <key>textureFileName</key>\n`;
+      plist += `    <string>merged.png</string>\n`;
+      plist += `  </dict>\n`;
+      plist += `</dict>\n`;
+      plist += `</plist>\n`;
+      return plist;
     }
   </script>
 </body>
